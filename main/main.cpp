@@ -8,12 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "math.h"
 
-
 static const char* TAGsetup = "BNOSetup";
 static const char* TAGget = "BNOget"; 
-
-
-
 static const char *TAG_TWAI = "TWAI";
 static const char *TAG_DATA = "DATA";
 
@@ -24,12 +20,12 @@ twai_message_t testMessage = {
     .data = {0, 100, 0, 200, 0, 150, 0, 250},
 };
 twai_message_t gyroMsg = {
-    .identifier = (uint32_t)16,// IN DECIMAL!!!!! CHANGE TO HEX FOR MOTEC DONT BE RESTARTED!!!!!
+    .identifier = (uint32_t)17,// IN DECIMAL!!!!! CHANGE TO HEX FOR MOTEC DONT BE RESTARTED!!!!!
     .data_length_code = 8,
     .data = {0, 100, 0, 200, 0, 150, 0, 250},
 };
 twai_message_t accelMsg = {
-    .identifier = (uint32_t)17,
+    .identifier = (uint32_t)18,
     .data_length_code = 8,
     .data = {0, 100, 0, 200, 0, 150, 0, 250},
 };
@@ -74,7 +70,7 @@ twai_general_config_t general_config = {
     .clkout_io = (GPIO_NUM_0),
     .bus_off_io = (GPIO_NUM_0),
     .tx_queue_len = (128),
-    .rx_queue_len = (128),
+    .rx_queue_len = (1),
     .alerts_enabled = (uint32_t)(TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_OFF),
     .clkout_divider = 0,
     .intr_flags = (1 << 1)};
@@ -84,6 +80,9 @@ int passCount = 0;
 int progCount = 0; 
 
 gpio_num_t bnoRst = GPIO_NUM_32 ; 
+BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
+esp_err_t res; 
+esp_err_t errStatus; 
 
 uint32_t alerts_to_enable = 
     TWAI_ALERT_TX_IDLE |
@@ -101,7 +100,8 @@ uint32_t alerts_to_enable =
     TWAI_ALERT_ERR_PASS |
     TWAI_ALERT_BUS_OFF;
 
-    uint32_t* alerts = new uint32_t; 
+uint32_t* alerts = new uint32_t; 
+twai_status_info_t  busRecovStatus; 
 
 void twaiErrPrint() {
         if (*alerts & TWAI_ALERT_TX_IDLE) {
@@ -147,7 +147,7 @@ void twaiErrPrint() {
             ESP_LOGE(TAG_TWAI, "BUS OFF: Triggering recovery.");
             twai_initiate_recovery();
         
-            // Optional: Wait for recovery to complete
+            // Wait for recovery to complete
             while (true) {
                 uint32_t recoveryAlerts;
                 if (twai_read_alerts(&recoveryAlerts, pdMS_TO_TICKS(1000)) == ESP_OK) {
@@ -157,10 +157,27 @@ void twaiErrPrint() {
                     }
                 }
             }
+        
+            // Restart TWAI driver after recovery
+            if (twai_start() == ESP_OK) {
+                ESP_LOGI(TAG_TWAI, "TWAI restarted successfully.");
+            } else {
+                ESP_LOGE(TAG_TWAI, "Failed to restart TWAI after recovery.");
+                return;
+            }
+        
+            // Confirm state is now RUNNING
+            twai_status_info_t busRecovStatus;
+            twai_get_status_info(&busRecovStatus);
+            if (busRecovStatus.state == TWAI_STATE_RUNNING) {
+                ESP_LOGI(TAG_TWAI, "TWAI controller is running again");
+            } else {
+                ESP_LOGW(TAG_TWAI, "TWAI controller not in running state after restart.");
+            }
         }
         
-    }
-    
+        
+    }   
 void TWAIconfig() {
     // Install TWAI driver
     if (twai_driver_install(&general_config, &t_config, &filter_config) == ESP_OK) {
@@ -182,8 +199,7 @@ void TWAIconfig() {
 
 
 }
-    BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
-
+    
 bool successFullBNOStart = false; 
 
 void bnoconfig(){
@@ -213,7 +229,11 @@ void bnoconfig(){
     try {
         bno.begin();  // BNO055 starts in CONFIG_MODE
         bno.enableExternalCrystal(); // Use external crystal for better accuracy
-        bno.setSensorOffsets(storedOffsets);
+        bno.setSensorOffsets(storedOffsets);\
+
+
+        //bandwidth filtering and config modes
+        /**/
         bno.setAccelConfig(BNO055_CONF_ACCEL_RANGE_4G,
                            BNO055_CONF_ACCEL_BANDWIDTH_7_81HZ,
                            BNO055_CONF_ACCEL_MODE_NORMAL);
@@ -221,6 +241,9 @@ void bnoconfig(){
         bno.setGyroConfig(BNO055_CONF_GYRO_RANGE_1000DPS,
                           BNO055_CONF_GYRO_BANDWIDTH_12HZ,
                           BNO055_CONF_GYRO_MODE_NORMAL);
+
+
+        /**? */
         
         // SET OPERATION MODE TO ACCGYRO NO FUSION gives bandwidth and range control
         bno.setOprModeAccGyro();
@@ -237,8 +260,6 @@ void bnoconfig(){
     
     }
 }
-esp_err_t res; 
-esp_err_t errStatus; 
 
 void twai_task(void *pvParameters) {
     esp_task_wdt_add(NULL);
@@ -282,24 +303,6 @@ void twai_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5)); // Ensure 10ms loop delay
     }
     
-    // while (true) {
-    //    progCount ++ ; 
-    //     // Transmit message
-    //     if (twai_transmit(&testMessage, pdMS_TO_TICKS(1)) == ESP_OK) {
-    //         // ESP_LOGI(TAG_TWAI, "Message transmitted");
-    //         passCount++;
-    //     } else {
-    //         failCount++;
-    //     }
-
-    //     // Print statistics
-    //     if (progCount % 1000 == 0) {
-    //         printf("QUEUED = %d, FAILED = %d\n", passCount, failCount);
-    //         esp_task_wdt_reset();
-    //         progCount = 0 ; 
-    //     }
-    //     vTaskDelay(pdMS_TO_TICKS(1));
-    // }
 }
 
 void fakeData(void *pvParameters) {
@@ -321,7 +324,7 @@ void fakeData(void *pvParameters) {
     }
 }
 
-void calibrationRead(void *pvParameters) {
+void calibrationRead() {
     esp_task_wdt_add(NULL);
     try {
         int8_t temperature = bno.getTemp();
@@ -384,31 +387,6 @@ void sensorRead(void *pvParameters) {
 esp_task_wdt_add(NULL); // Add watchdog task
 // BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25); // Initialize BNO055 over UART
 
-// try {
-//     bno.begin();  // BNO055 starts in CONFIG_MODE
-//     bno.enableExternalCrystal(); // Use external crystal for better accuracy
-
-//     bno.setAccelConfig(BNO055_CONF_ACCEL_RANGE_4G,
-//                        BNO055_CONF_ACCEL_BANDWIDTH_7_81HZ,
-//                        BNO055_CONF_ACCEL_MODE_NORMAL);
-
-//     bno.setGyroConfig(BNO055_CONF_GYRO_RANGE_1000DPS,
-//                       BNO055_CONF_GYRO_BANDWIDTH_12HZ,
-//                       BNO055_CONF_GYRO_MODE_NORMAL);
-
-//     // LOAD STORED CALIBRATION OFFSETS
-//     bno.setSensorOffsets(storedOffsets);
-
-//     // SET OPERATION MODE TO NDOF (9 Degrees of Freedom for Fused Data)
-//     bno.setOprModeAccGyro();
-//     ESP_LOGI(TAGget, "Setup Done.");
-// } catch (BNO055BaseException &ex) {
-//     ESP_LOGE(TAGget, "Setup Failed, Error: %s", ex.what());
-//     return;
-// } catch (std::exception &ex) {
-//     ESP_LOGE(TAGget, "Setup Failed, Error: %s", ex.what());
-//     return;
-// }
 
 // VERIFY SENSOR SETUP AND GET BASIC INFO
 try {
@@ -453,19 +431,23 @@ while (true) {
 
     
     // PRINT RAW SENSOR DATA (FOR DEBUGGING)
-    ESP_LOGI(TAG_DATA,"Linear Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
+    ESP_LOGV(TAG_DATA,"Linear Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
            linearAccel.x, linearAccel.y, linearAccel.z);
-    ESP_LOGI(TAG_DATA,"Rotational Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
+    ESP_LOGV(TAG_DATA,"Rotational Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n",
            rotationalAccel.x, rotationalAccel.y, rotationalAccel.z);
 
            if (!gyroInvalid) {
-            float gx = fminf(fmaxf(rotationalAccel.x, -327.67f), 327.67f);
-            float gy = fminf(fmaxf(rotationalAccel.y, -327.67f), 327.67f);
-            float gz = fminf(fmaxf(rotationalAccel.z, -327.67f), 327.67f);
+            // float gx = fminf(fmaxf(rotationalAccel.x, -32767.67f), 327.67f);
+            // float gy = fminf(fmaxf(rotationalAccel.y, -327.67f), 327.67f);
+            // float gz = fminf(fmaxf(rotationalAccel.z, -327.67f), 327.67f);
             
-            int16_t gx_i = (int16_t)(gx * 100);
-            int16_t gy_i = (int16_t)(gy * 100);
-            int16_t gz_i = (int16_t)(gz * 100);
+            float gx = roundf((rotationalAccel.x)*10);
+            float gy = roundf((rotationalAccel.y)*10);
+            float gz = roundf((rotationalAccel.z)*10);
+
+            int16_t gx_i = (int16_t)(gx);
+            int16_t gy_i = (int16_t)(gy);
+            int16_t gz_i = (int16_t)(gz);
         
             gyroMsg.data[0] = gx_i >> 8;
             gyroMsg.data[1] = gx_i & 0xFF;
@@ -503,119 +485,52 @@ while (true) {
 
 }
 
-
 extern "C" void app_main(void) {
+
+
     TWAIconfig();
     bnoconfig(); 
+    //calibrationRead(); 
     // Create tasks pinned to specific cores
     xTaskCreatePinnedToCore(twai_task, "TWAI Task", 4096, NULL, 16, NULL, 1);            // Pin TWAI task to Core 0
     xTaskCreatePinnedToCore(sensorRead, "Sensor Read", 4096, NULL, 5, NULL, 0); // Pin Sensor Read task to Core 1
 }
 
-// void sensorRead(void *pvPavameters){
 
-//     // CALCULATED MEMS OFFSETS 
-//      bno055_offsets_t storedOffsets = {
-//     .accelOffsetX = -38,
-//     .accelOffsetY = -38,
-//     .accelOffsetZ = -36,
-//     .magOffsetX = -107,
-//     .magOffsetY = -87,
-//     .magOffsetZ = -357,
-//     .gyroOffsetX = 1,
-//     .gyroOffsetY = -3,
-//     .gyroOffsetZ = -1,
-//     .accelRadius = 1000,
-//     .magRadius = 618
-// };
 
-//     esp_task_wdt_add(NULL);
-//     BNO055 bno(UART_NUM_1, GPIO_NUM_33, GPIO_NUM_25);
-//     try {
-//         bno.begin();  // BNO055 is in CONFIG_MODE until it is changed
-//         bno.enableExternalCrystal();
-//         void setAccelConfig(bno055_accel_range_t range = BNO055_CONF_ACCEL_RANGE_4G,
-//                         bno055_accel_bandwidth_t bandwidth = BNO055_CONF_ACCEL_BANDWIDTH_62_5HZ,
-//                         bno055_accel_mode_t mode = BNO055_CONF_ACCEL_MODE_NORMAL);
-//         void setGyroConfig(bno055_gyro_range_t range = BNO055_CONF_GYRO_RANGE_1000DPS,
-//                        bno055_gyro_bandwidth_t bandwidth = BNO055_CONF_GYRO_BANDWIDTH_23HZ,
-//                        bno055_gyro_mode_t mode = BNO055_CONF_GYRO_MODE_NORMAL);
-    
-//        bno.setSensorOffsets(storedOffsets);
 
-//         // bno.setAxisRemap(BNO055_REMAP_CONFIG_P1, BNO055_REMAP_SIGN_P1); // see datasheet, section 3.4
-//         /* you can specify a PoWeRMode using:
-//                 - setPwrModeNormal(); (Default on startup)
-//                 - setPwrModeLowPower();
-//                 - setPwrModeSuspend(); (while suspended bno055 must remain in CONFIG_MODE)
-//         */
-//         bno.setOprModeNdof();
-//         ESP_LOGI(TAG, "Setup Done.");
-//     } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
-//         ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-//         return;
-//     } catch (std::exception& ex) {
-//         ESP_LOGE(TAG, "Setup Failed, Error: %s", ex.what());
-//         return;
-//     }
-//     try {
-//         int8_t temperature = bno.getTemp();
-//         ESP_LOGI(TAG, "TEMP: %d°C", temperature);
 
-//         int16_t sw = bno.getSWRevision();
-//         uint8_t bl_rev = bno.getBootloaderRevision();
-//         ESP_LOGI(TAG, "SW rev: %d, bootloader rev: %u", sw, bl_rev);
 
-//         bno055_self_test_result_t res = bno.getSelfTestResult();
-//         ESP_LOGI(TAG, "Self-Test Results: MCU: %u, GYR:%u, MAG:%u, ACC: %u", res.mcuState, res.gyrState, res.magState,
-//                  res.accState);
-//     } catch (BNO055BaseException& ex) {  // see BNO055ESP32.h for more details about exceptions
-//         ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
-//         return;
-//     } catch (std::exception& ex) {
-//         ESP_LOGE(TAG, "Something bad happened: %s", ex.what());
-//         return;
-//     }
 
-//     //DATAPULL STRUCTS LOOPED THROUGH AS TEMP MEM
-//     bno055_vector_t  linearAccel ; 
-//     bno055_vector_t  rotationalAccel ; 
 
-//     while (true) {
-//         rotationalAccel = bno.getVectorGyroscope();
-//         linearAccel = bno.getVectorLinearAccel();
 
-//     // printf("Linear Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n", 
-//     // linearAccel.x, linearAccel.y, linearAccel.z);
-//     printf("Rotational Acceleration - X: %.2f, Y: %.2f, Z: %.2f\n", 
-//     rotationalAccel.x, rotationalAccel.y, rotationalAccel.z);
 
-//         // Convert accelerometer data to G (4 significant figures)
-//         float linearAccelX_g = roundf((linearAccel.x / 9.80665) * 10000) / 10000;
-//         float linearAccelY_g = roundf((linearAccel.y / 9.80665) * 10000) / 10000;
-//         float linearAccelZ_g = roundf((linearAccel.z / 9.80665) * 10000) / 10000;
 
-//         // Convert gyroscope data to signed 16-bit and populate CAN message
-//         gyroMsg.data[0] = (uint8_t)(((int16_t)(rotationalAccel.x * 1000)) >> 8); // High byte
-//         gyroMsg.data[1] = (uint8_t)(((int16_t)(rotationalAccel.x * 1000)) & 0xFF); // Low byte
-//         gyroMsg.data[2] = (uint8_t)(((int16_t)(rotationalAccel.y * 1000)) >> 8);
-//         gyroMsg.data[3] = (uint8_t)(((int16_t)(rotationalAccel.y * 1000)) & 0xFF);
-//         gyroMsg.data[4] = (uint8_t)(((int16_t)(rotationalAccel.z * 1000)) >> 8);
-//         gyroMsg.data[5] = (uint8_t)(((int16_t)(rotationalAccel.z * 1000)) & 0xFF);
-//         gyroMsg.data[6] = 0x00; // Placeholder high byte
-//         gyroMsg.data[7] = 0x00; // Placeholder low byte
 
-//         // Convert linear acceleration in G to signed 16-bit and populate CAN message
-//         accelMsg.data[0] = (uint8_t)(((int16_t)(linearAccelX_g * 1000)) >> 8); // High byte
-//         accelMsg.data[1] = (uint8_t)(((int16_t)(linearAccelX_g * 1000)) & 0xFF); // Low byte
-//         accelMsg.data[2] = (uint8_t)(((int16_t)(linearAccelY_g * 1000)) >> 8);
-//         accelMsg.data[3] = (uint8_t)(((int16_t)(linearAccelY_g * 1000)) & 0xFF);
-//         accelMsg.data[4] = (uint8_t)(((int16_t)(linearAccelZ_g * 1000)) >> 8);
-//         accelMsg.data[5] = (uint8_t)(((int16_t)(linearAccelZ_g * 1000)) & 0xFF);
-//         accelMsg.data[6] = 0x00; // Placeholder high byte
-//         accelMsg.data[7] = 0x00; // Placeholder low byte
-//         vTaskDelay(pdMS_TO_TICKS(5)); // 10ms delay
-//         esp_task_wdt_reset();
-//     }
 
-// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

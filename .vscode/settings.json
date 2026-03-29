@@ -13,6 +13,12 @@
     ],
     "idf.pythonBinPathWin": "C:\\Users\\iampu\\.espressif\\python_env\\idf5.4_py3.11_env\\Scripts\\python.exe",
     "idf.toolsPathWin": "C:\\Users\\iampu\\.espressif",
-    "idf.portWin": "COM6",
-    "idf.flashType": "UART"
+    "idf.portWin": "COM7",
+    "idf.flashType": "UART",
+    "files.associations": {
+        "cmath": "cpp",
+        "optional": "cpp",
+        "variant": "cpp"
+    },
+    "idf.currentSetup": "C:\\Users\\iampu\\esp\\esp-idf"
 }
